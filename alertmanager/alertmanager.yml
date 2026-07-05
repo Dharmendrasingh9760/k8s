@@ -1,0 +1,65 @@
+global:
+  resolve_timeout: 5m
+  # --- Fill these in with real SMTP creds for the video demo, or remove
+  # the email receivers below and rely on the webhook receiver only ---
+  smtp_smarthost: 'smtp.gmail.com:587'
+  smtp_from: 'alerts@example.com'
+  smtp_auth_username: 'alerts@example.com'
+  smtp_auth_password: 'REPLACE_WITH_APP_PASSWORD'
+  smtp_require_tls: true
+
+# Alert grouping/labels used to decide how alerts are batched into notifications
+route:
+  group_by: ['alertname', 'name']
+  group_wait: 15s
+  group_interval: 30s
+  repeat_interval: 3h
+  receiver: 'warning-notifications'      # default / fallback receiver
+  routes:
+    # --- Tier 1: WARNING -> notify the team channel, low urgency ---
+    - matchers:
+        - severity = "warning"
+      receiver: 'warning-notifications'
+      group_wait: 15s
+      repeat_interval: 1h
+      continue: false
+
+    # --- Tier 2: CRITICAL -> escalate: paged faster + repeats more
+    #      often until someone resolves it, and goes to a second,
+    #      higher-urgency receiver (on-call / incident channel) ---
+    - matchers:
+        - severity = "critical"
+      receiver: 'critical-escalation'
+      group_wait: 5s
+      group_interval: 1m
+      repeat_interval: 15m      # keeps re-notifying every 15m while unresolved
+      continue: false
+
+# Prevents a "warning" notification from also firing once the same
+# service/category has already escalated to "critical" (reduces noise).
+inhibit_rules:
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: ['name', 'category']
+
+receivers:
+  - name: 'warning-notifications'
+    webhook_configs:
+      - url: 'http://webhook-logger:8081/alerts/warning'
+        send_resolved: true
+    # Uncomment to also email the team on warnings:
+    # email_configs:
+    #   - to: 'devops-team@example.com'
+    #     send_resolved: true
+
+  - name: 'critical-escalation'
+    webhook_configs:
+      # Stand-in for a real PagerDuty/Slack/Opsgenie webhook.
+      # Swap this URL for a real incident-management webhook in production.
+      - url: 'http://webhook-logger:8081/alerts/critical'
+        send_resolved: true
+    email_configs:
+      - to: 'oncall-lead@example.com'
+        send_resolved: true

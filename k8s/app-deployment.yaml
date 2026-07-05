@@ -1,0 +1,106 @@
+# Two "services" (web-service-a, web-service-b) deployed to the cluster so
+# the dashboard/alerts have something real to monitor at the service level.
+#
+# IMPORTANT: build & push the image first (see k8s section in README), then
+# replace REPLACE_WITH_YOUR_IMAGE below with your actual image reference,
+# e.g. docker.io/yourusername/devops-demo-app:latest
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-service-a
+  namespace: devops-demo
+  labels:
+    app: web-service-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web-service-a
+  template:
+    metadata:
+      labels:
+        app: web-service-a
+    spec:
+      containers:
+        - name: web-service-a
+          image: REPLACE_WITH_YOUR_IMAGE
+          ports:
+            - containerPort: 5000
+              name: http
+          env:
+            - name: SERVICE_NAME
+              value: "web-service-a"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service-a
+  namespace: devops-demo
+  labels:
+    app: web-service-a
+spec:
+  selector:
+    app: web-service-a
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-service-b
+  namespace: devops-demo
+  labels:
+    app: web-service-b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web-service-b
+  template:
+    metadata:
+      labels:
+        app: web-service-b
+    spec:
+      containers:
+        - name: web-service-b
+          image: REPLACE_WITH_YOUR_IMAGE
+          ports:
+            - containerPort: 5000
+              name: http
+          env:
+            - name: SERVICE_NAME
+              value: "web-service-b"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service-b
+  namespace: devops-demo
+  labels:
+    app: web-service-b
+spec:
+  selector:
+    app: web-service-b
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+  type: ClusterIP

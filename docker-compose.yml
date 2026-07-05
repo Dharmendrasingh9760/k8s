@@ -1,0 +1,157 @@
+version: "3.8"
+
+networks:
+  monitoring:
+    driver: bridge
+
+volumes:
+  prometheus_data: {}
+  grafana_data: {}
+  alertmanager_data: {}
+
+services:
+  # ---------------------------------------------------------------
+  # Node Exporter - exposes host-level CPU / RAM / disk / network metrics
+  # ---------------------------------------------------------------
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: node-exporter
+    restart: unless-stopped
+    command:
+      - '--path.rootfs=/host'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - '/:/host:ro,rslave'
+    ports:
+      - "9100:9100"
+    networks:
+      - monitoring
+
+  # ---------------------------------------------------------------
+  # cAdvisor - exposes per-container CPU / RAM metrics (service-level view)
+  # ---------------------------------------------------------------
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - monitoring
+
+  # ---------------------------------------------------------------
+  # Demo "services" being monitored (stand-ins for real microservices)
+  # so the dashboard has multiple named services to show at service level.
+  # ---------------------------------------------------------------
+  # ---------------------------------------------------------------
+  # Real demo application (Flask) - the "services" being monitored.
+  # Each exposes /load-cpu and /load-memory endpoints to trigger
+  # alerts on demand, plus /work for baseline traffic and / for
+  # health checks.
+  # ---------------------------------------------------------------
+  web-service-a:
+    build: ./app
+    container_name: web-service-a
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=web-service-a
+    ports:
+      - "5001:5000"
+    networks:
+      - monitoring
+
+  web-service-b:
+    build: ./app
+    container_name: web-service-b
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=web-service-b
+    ports:
+      - "5002:5000"
+    networks:
+      - monitoring
+
+  # ---------------------------------------------------------------
+  # Prometheus - scrapes metrics + evaluates alert rules
+  # ---------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    networks:
+      - monitoring
+    depends_on:
+      - node-exporter
+      - cadvisor
+
+  # ---------------------------------------------------------------
+  # Alertmanager - routes/groups/escalates firing alerts
+  # ---------------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    ports:
+      - "9093:9093"
+    networks:
+      - monitoring
+
+  # ---------------------------------------------------------------
+  # Grafana - dashboard visualization (auto-provisioned)
+  # ---------------------------------------------------------------
+  grafana:
+    image: grafana/grafana-oss:11.1.4
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - monitoring
+    depends_on:
+      - prometheus
+
+  # ---------------------------------------------------------------
+  # Webhook receiver stub - simulates the "escalation" endpoint
+  # (e.g. PagerDuty/Slack/Incident tool). Logs every alert it receives.
+  # ---------------------------------------------------------------
+  webhook-logger:
+    image: mendhak/http-https-echo:31
+    container_name: webhook-logger
+    restart: unless-stopped
+    environment:
+      - HTTP_PORT=8081
+    ports:
+      - "8081:8081"
+    networks:
+      - monitoring

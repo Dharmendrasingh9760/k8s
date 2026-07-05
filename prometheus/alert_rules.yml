@@ -1,0 +1,173 @@
+groups:
+  # =====================================================================
+  # SERVICE-LEVEL CPU RULES (per container, from cAdvisor)
+  # =====================================================================
+  # =====================================================================
+  # APPLICATION ERROR-RATE RULES (from app's own /metrics endpoint)
+  # This is the "Error Escalation" part of the assignment: watches the
+  # ratio of HTTP 5xx responses to total requests, per service, and
+  # escalates from warning -> critical the longer/worse it gets.
+  # =====================================================================
+  - name: application_error_alerts
+    rules:
+      - record: service:http_error_rate:ratio
+        expr: >
+          sum by (service) (rate(app_http_requests_total{http_status=~"5.."}[2m]))
+          /
+          sum by (service) (rate(app_http_requests_total[2m]))
+
+      - alert: ServiceHighErrorRate
+        expr: service:http_error_rate:ratio > 0.05
+        for: 2m
+        labels:
+          severity: warning
+          category: errors
+        annotations:
+          summary: "Elevated error rate on {{ $labels.service }}"
+          description: "{{ $labels.service }} is returning errors on {{ $value | humanizePercentage }} of requests (>5% threshold) for 2 minutes."
+
+      - alert: ServiceCriticalErrorRate
+        expr: service:http_error_rate:ratio > 0.20
+        for: 3m
+        labels:
+          severity: critical
+          category: errors
+        annotations:
+          summary: "CRITICAL error rate on {{ $labels.service }}"
+          description: "{{ $labels.service }} is returning errors on {{ $value | humanizePercentage }} of requests (>20% threshold) for 3 minutes. Escalating to on-call / incident channel."
+
+      - alert: ServiceErrorSpike
+        expr: sum by (service) (increase(app_http_requests_total{http_status=~"5.."}[1m])) > 20
+        for: 1m
+        labels:
+          severity: critical
+          category: errors
+        annotations:
+          summary: "Sudden error spike on {{ $labels.service }}"
+          description: "{{ $labels.service }} produced more than 20 error responses in the last minute - possible outage. Immediate escalation."
+
+  - name: service_cpu_alerts
+    rules:
+      - record: service:cpu_usage:percent
+        expr: >
+          sum by (name) (
+            rate(container_cpu_usage_seconds_total{name!=""}[2m])
+          ) * 100
+
+      - alert: ServiceHighCPUUsage
+        expr: service:cpu_usage:percent > 70
+        for: 2m
+        labels:
+          severity: warning
+          category: cpu
+        annotations:
+          summary: "High CPU usage on service {{ $labels.name }}"
+          description: "Service {{ $labels.name }} CPU usage is {{ printf \"%.1f\" $value }}%, above the 70% warning threshold for 2 minutes."
+
+      - alert: ServiceCriticalCPUUsage
+        expr: service:cpu_usage:percent > 90
+        for: 5m
+        labels:
+          severity: critical
+          category: cpu
+        annotations:
+          summary: "CRITICAL CPU usage on service {{ $labels.name }}"
+          description: "Service {{ $labels.name }} CPU usage is {{ printf \"%.1f\" $value }}%, above the 90% critical threshold for 5 minutes. This alert escalates beyond the on-call channel."
+
+  # =====================================================================
+  # SERVICE-LEVEL RAM RULES (per container, from cAdvisor)
+  # =====================================================================
+  - name: service_memory_alerts
+    rules:
+      - record: service:memory_usage:percent
+        expr: >
+          (
+            container_memory_usage_bytes{name!=""}
+            /
+            on(name) container_spec_memory_limit_bytes{name!=""} > 0
+          ) * 100
+
+      - alert: ServiceHighMemoryUsage
+        expr: service:memory_usage:percent > 75
+        for: 2m
+        labels:
+          severity: warning
+          category: memory
+        annotations:
+          summary: "High memory usage on service {{ $labels.name }}"
+          description: "Service {{ $labels.name }} memory usage is {{ printf \"%.1f\" $value }}%, above the 75% warning threshold for 2 minutes."
+
+      - alert: ServiceCriticalMemoryUsage
+        expr: service:memory_usage:percent > 90
+        for: 5m
+        labels:
+          severity: critical
+          category: memory
+        annotations:
+          summary: "CRITICAL memory usage on service {{ $labels.name }}"
+          description: "Service {{ $labels.name }} memory usage is {{ printf \"%.1f\" $value }}%, above the 90% critical threshold for 5 minutes. This alert escalates beyond the on-call channel."
+
+  # =====================================================================
+  # HOST-LEVEL RULES (from node_exporter) - infra-wide safety net
+  # =====================================================================
+  - name: host_alerts
+    rules:
+      - alert: HostHighCPUUsage
+        expr: >
+          100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 80
+        for: 2m
+        labels:
+          severity: warning
+          category: cpu
+        annotations:
+          summary: "High host CPU usage on {{ $labels.instance }}"
+          description: "Host {{ $labels.instance }} CPU usage above 80% for 2 minutes."
+
+      - alert: HostHighMemoryUsage
+        expr: >
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 2m
+        labels:
+          severity: warning
+          category: memory
+        annotations:
+          summary: "High host memory usage on {{ $labels.instance }}"
+          description: "Host {{ $labels.instance }} memory usage above 85% for 2 minutes."
+
+      - alert: HostCriticalMemoryUsage
+        expr: >
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 95
+        for: 5m
+        labels:
+          severity: critical
+          category: memory
+        annotations:
+          summary: "CRITICAL host memory usage on {{ $labels.instance }}"
+          description: "Host {{ $labels.instance }} memory usage above 95% for 5 minutes."
+
+  # =====================================================================
+  # HOST-LEVEL DISK RULES (from node_exporter)
+  # =====================================================================
+  - name: host_disk_alerts
+    rules:
+      - alert: HostHighDiskUsage
+        expr: >
+          (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"})) * 100 > 75
+        for: 5m
+        labels:
+          severity: warning
+          category: disk
+        annotations:
+          summary: "High disk usage on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+          description: "Mountpoint {{ $labels.mountpoint }} on {{ $labels.instance }} is above 75% full for 5 minutes."
+
+      - alert: HostCriticalDiskUsage
+        expr: >
+          (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"})) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          category: disk
+        annotations:
+          summary: "CRITICAL disk usage on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+          description: "Mountpoint {{ $labels.mountpoint }} on {{ $labels.instance }} is above 90% full for 5 minutes. Escalating to on-call."

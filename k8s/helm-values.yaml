@@ -1,0 +1,70 @@
+# Custom values for the kube-prometheus-stack Helm chart.
+# Install with:
+#   helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace -f k8s/helm-values.yaml
+
+grafana:
+  adminPassword: admin   # change this for anything beyond a demo
+  service:
+    type: ClusterIP      # access via `kubectl port-forward` (see README)
+    # type: NodePort     # uncomment for direct node-IP:port access on cloud VMs/EC2
+
+alertmanager:
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'pod', 'service']
+      group_wait: 15s
+      group_interval: 30s
+      repeat_interval: 3h
+      receiver: 'warning-notifications'
+      routes:
+        # Tier 1: WARNING -> team channel, low urgency
+        - matchers:
+            - severity = "warning"
+          receiver: 'warning-notifications'
+          group_wait: 15s
+          repeat_interval: 1h
+          continue: false
+
+        # Tier 2: CRITICAL -> escalate faster + repeats until resolved
+        - matchers:
+            - severity = "critical"
+          receiver: 'critical-escalation'
+          group_wait: 5s
+          group_interval: 1m
+          repeat_interval: 15m
+          continue: false
+    inhibit_rules:
+      - source_matchers:
+          - severity = "critical"
+        target_matchers:
+          - severity = "warning"
+        equal: ['pod', 'category']
+    receivers:
+      - name: 'warning-notifications'
+        webhook_configs:
+          - url: 'http://webhook-logger.devops-demo.svc.cluster.local:8081/alerts/warning'
+            send_resolved: true
+      - name: 'critical-escalation'
+        webhook_configs:
+          - url: 'http://webhook-logger.devops-demo.svc.cluster.local:8081/alerts/critical'
+            send_resolved: true
+        # Uncomment and fill in for real email escalation:
+        # email_configs:
+        #   - to: 'oncall-lead@example.com'
+        #     send_resolved: true
+
+# Reduce resource footprint for demo/assignment purposes (safe to remove
+# these limits on a bigger cluster)
+prometheus:
+  prometheusSpec:
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    retention: 6h

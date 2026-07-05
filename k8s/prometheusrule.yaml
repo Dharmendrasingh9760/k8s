@@ -1,0 +1,165 @@
+# PrometheusRule CRD - the Prometheus Operator picks these up automatically
+# (no need to mount/reload prometheus.yml manually like in Docker Compose).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: devops-demo-alerts
+  namespace: devops-demo
+  labels:
+    release: kube-prometheus-stack   # must match Helm release name
+spec:
+  groups:
+    # =================================================================
+    # SERVICE-LEVEL CPU (relative to each container's resource limit)
+    # =================================================================
+    - name: k8s_service_cpu_alerts
+      rules:
+        - record: service:cpu_usage:percent
+          expr: >
+            (
+              sum by (namespace, pod, container) (
+                rate(container_cpu_usage_seconds_total{namespace="devops-demo", container!="", container!="POD"}[2m])
+              )
+              /
+              on(namespace, pod, container) group_left
+              sum by (namespace, pod, container) (
+                kube_pod_container_resource_limits{namespace="devops-demo", resource="cpu"}
+              )
+            ) * 100
+
+        - alert: ServiceHighCPUUsage
+          expr: service:cpu_usage:percent > 70
+          for: 2m
+          labels:
+            severity: warning
+            category: cpu
+          annotations:
+            summary: "High CPU usage on {{ $labels.pod }}"
+            description: "Container {{ $labels.container }} in pod {{ $labels.pod }} (ns {{ $labels.namespace }}) is at {{ printf \"%.1f\" $value }}% of its CPU limit for 2 minutes."
+
+        - alert: ServiceCriticalCPUUsage
+          expr: service:cpu_usage:percent > 90
+          for: 5m
+          labels:
+            severity: critical
+            category: cpu
+          annotations:
+            summary: "CRITICAL CPU usage on {{ $labels.pod }}"
+            description: "Container {{ $labels.container }} in pod {{ $labels.pod }} (ns {{ $labels.namespace }}) is at {{ printf \"%.1f\" $value }}% of its CPU limit for 5 minutes. Escalating to on-call."
+
+    # =================================================================
+    # SERVICE-LEVEL MEMORY (relative to each container's resource limit)
+    # =================================================================
+    - name: k8s_service_memory_alerts
+      rules:
+        - record: service:memory_usage:percent
+          expr: >
+            (
+              sum by (namespace, pod, container) (
+                container_memory_working_set_bytes{namespace="devops-demo", container!="", container!="POD"}
+              )
+              /
+              on(namespace, pod, container) group_left
+              sum by (namespace, pod, container) (
+                kube_pod_container_resource_limits{namespace="devops-demo", resource="memory"}
+              )
+            ) * 100
+
+        - alert: ServiceHighMemoryUsage
+          expr: service:memory_usage:percent > 75
+          for: 2m
+          labels:
+            severity: warning
+            category: memory
+          annotations:
+            summary: "High memory usage on {{ $labels.pod }}"
+            description: "Container {{ $labels.container }} in pod {{ $labels.pod }} (ns {{ $labels.namespace }}) is at {{ printf \"%.1f\" $value }}% of its memory limit for 2 minutes."
+
+        - alert: ServiceCriticalMemoryUsage
+          expr: service:memory_usage:percent > 90
+          for: 5m
+          labels:
+            severity: critical
+            category: memory
+          annotations:
+            summary: "CRITICAL memory usage on {{ $labels.pod }}"
+            description: "Container {{ $labels.container }} in pod {{ $labels.pod }} (ns {{ $labels.namespace }}) is at {{ printf \"%.1f\" $value }}% of its memory limit for 5 minutes. Escalating to on-call."
+
+    # =================================================================
+    # APPLICATION ERROR-RATE (Error Escalation) - same PromQL as the
+    # Docker Compose setup since the app exposes the same /metrics
+    # =================================================================
+    - name: k8s_application_error_alerts
+      rules:
+        - record: service:http_error_rate:ratio
+          expr: >
+            sum by (service) (rate(app_http_requests_total{http_status=~"5.."}[2m]))
+            /
+            sum by (service) (rate(app_http_requests_total[2m]))
+
+        - alert: ServiceHighErrorRate
+          expr: service:http_error_rate:ratio > 0.05
+          for: 2m
+          labels:
+            severity: warning
+            category: errors
+          annotations:
+            summary: "Elevated error rate on {{ $labels.service }}"
+            description: "{{ $labels.service }} is returning errors on {{ $value | humanizePercentage }} of requests (>5% threshold) for 2 minutes."
+
+        - alert: ServiceCriticalErrorRate
+          expr: service:http_error_rate:ratio > 0.20
+          for: 3m
+          labels:
+            severity: critical
+            category: errors
+          annotations:
+            summary: "CRITICAL error rate on {{ $labels.service }}"
+            description: "{{ $labels.service }} is returning errors on {{ $value | humanizePercentage }} of requests (>20% threshold) for 3 minutes. Escalating to on-call."
+
+        - alert: ServiceErrorSpike
+          expr: sum by (service) (increase(app_http_requests_total{http_status=~"5.."}[1m])) > 20
+          for: 1m
+          labels:
+            severity: critical
+            category: errors
+          annotations:
+            summary: "Sudden error spike on {{ $labels.service }}"
+            description: "{{ $labels.service }} produced more than 20 error responses in the last minute - possible outage. Immediate escalation."
+
+    # =================================================================
+    # NODE-LEVEL (whole worker node CPU/RAM/Disk, via node-exporter
+    # DaemonSet that ships with kube-prometheus-stack)
+    # =================================================================
+    - name: k8s_node_alerts
+      rules:
+        - alert: NodeHighCPUUsage
+          expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 80
+          for: 2m
+          labels:
+            severity: warning
+            category: cpu
+          annotations:
+            summary: "High node CPU usage on {{ $labels.instance }}"
+            description: "Node {{ $labels.instance }} CPU usage above 80% for 2 minutes."
+
+        - alert: NodeHighMemoryUsage
+          expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+          for: 2m
+          labels:
+            severity: warning
+            category: memory
+          annotations:
+            summary: "High node memory usage on {{ $labels.instance }}"
+            description: "Node {{ $labels.instance }} memory usage above 85% for 2 minutes."
+
+        - alert: NodeHighDiskUsage
+          expr: >
+            (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"})) * 100 > 75
+          for: 5m
+          labels:
+            severity: warning
+            category: disk
+          annotations:
+            summary: "High disk usage on {{ $labels.instance }} ({{ $labels.mountpoint }})"
+            description: "Mountpoint {{ $labels.mountpoint }} on node {{ $labels.instance }} is above 75% full for 5 minutes."
